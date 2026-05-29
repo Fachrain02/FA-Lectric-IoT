@@ -1,0 +1,32 @@
+#######################################
+# Syntax Coloring Map for FA-Lectric-IoT
+#######################################
+
+#######################################
+# Datatypes (KEYWORD1)
+#######################################
+FALectricIoT	KEYWORD1
+
+#######################################
+# Methods and Functions (KEYWORD2)
+#######################################
+begin	KEYWORD2
+loop	KEYWORD2
+set	KEYWORD2
+getFloat	KEYWORD2
+getInt	KEYWORD2
+getBool	KEYWORD2
+getString	KEYWORD2
+push	KEYWORD2
+on	KEYWORD2
+connected	KEYWORD2
+setServer	KEYWORD2
+
+#######################################
+# Instances (KEYWORD2)
+#######################################
+fa	KEYWORD2
+
+#######################################
+# Constants (LITERAL1)
+#######################################
