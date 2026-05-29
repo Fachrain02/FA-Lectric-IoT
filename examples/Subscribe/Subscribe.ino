@@ -1,43 +1,49 @@
 /**
- * FA-Lectric-IoT — Subscribe (Terima Perintah dari UI)
- * Callback dipanggil otomatis saat ada perubahan dari dashboard.
+ * FA-Lectric-IoT — Subscribe (Terima Perintah dari Dashboard)
+ * Callback dipanggil otomatis saat ada perubahan dari UI.
+ * Bisa kontrol relay, LED, motor, dll dari jarak jauh.
  */
 
 #include <FALectricIoT.h>
 
-// Callback: dipanggil saat "Relay" berubah dari UI
+#define RELAY_PIN 2
+#define LED_PIN 4
+
+unsigned long lastSend = 0;
+
+// Callback: Relay diubah dari dashboard
 void onRelay(String value) {
-  Serial.println("Relay diubah ke: " + value);
-  if (value == "true") {
-    digitalWrite(2, HIGH);
-  } else {
-    digitalWrite(2, LOW);
-  }
+  bool state = (value == "true");
+  digitalWrite(RELAY_PIN, state ? HIGH : LOW);
+  Serial.println("[FA] Relay → " + value);
 }
 
-// Callback: dipanggil saat "Brightness" berubah
+// Callback: Brightness diubah dari dashboard (PWM)
 void onBrightness(String value) {
   int pwm = value.toInt();
-  analogWrite(5, pwm);
-  Serial.println("Brightness: " + value);
+  analogWrite(LED_PIN, pwm);
+  Serial.println("[FA] Brightness → " + value);
 }
 
 void setup() {
   Serial.begin(115200);
-  pinMode(2, OUTPUT);
+  pinMode(RELAY_PIN, OUTPUT);
+  pinMode(LED_PIN, OUTPUT);
 
-  fa.begin("WIFI_SSID", "WIFI_PASSWORD", "fal_YOUR_API_KEY");
+  fa.begin("WIFI_SSID", "WIFI_PASS", "fal_YOUR_API_KEY");
 
-  // Subscribe ke perubahan key tertentu
+  // Daftarkan callback (sekali saja di setup)
   fa.on("Relay", onRelay);
   fa.on("Brightness", onBrightness);
 }
 
 void loop() {
-  fa.loop(); // Handle WebSocket events + trigger callbacks
+  fa.loop(); // Handle WebSocket + trigger callbacks
 
-  // Tetap bisa kirim data bersamaan tanpa hambatan
-  fa.set("Suhu", 27.5);
-
-  delay(2000);
+  // Tetap bisa kirim data sensor bersamaan (tidak mengganggu subscribe)
+  if (millis() - lastSend >= 3000) {
+    lastSend = millis();
+    fa.set("Suhu", 27.5);
+    fa.set("Uptime", (int)(millis() / 1000));
+  }
 }
