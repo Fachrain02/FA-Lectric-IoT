@@ -32,7 +32,7 @@ String storedSSID = "";
 String storedPass = "";
 String storedKey = "";
 String storedServer = "";
-uint16_t storedWsPort = 80;  // Lewat NGINX (/ws); 3020 hanya internal di server
+uint16_t storedWsPort = 443;  // WSS via NGINX (HTTPS/SSL)
 
 bool wsConnected = false;
 unsigned long lastReconnect = 0;
@@ -51,7 +51,7 @@ void setup() {
   storedPass = prefs.getString("pass", "");
   storedKey = prefs.getString("key", "");
   storedServer = prefs.getString("server", "fa-lectric.com");
-  storedWsPort = prefs.getUShort("wsport", 80);
+  storedWsPort = prefs.getUShort("wsport", 443);
   prefs.end();
 
   if (storedSSID.length() > 0 && storedKey.length() > 0) {
@@ -147,7 +147,11 @@ void connectWiFi() {
 
 void connectWebSocket() {
   String path = "/ws?key=" + storedKey;
-  ws.begin(storedServer.c_str(), storedWsPort, path.c_str());
+  if (storedWsPort == 443) {
+    ws.beginSSL(storedServer.c_str(), 443, path.c_str());
+  } else {
+    ws.begin(storedServer.c_str(), storedWsPort, path.c_str());
+  }
   ws.onEvent(wsEvent);
   ws.setReconnectInterval(3000);
   Serial.println("[FA] Menghubungkan ke server (WebSocket)...");

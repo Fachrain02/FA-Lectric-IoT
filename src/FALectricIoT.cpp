@@ -16,7 +16,7 @@ FALectricIoT::FALectricIoT() {
   _lastReconnect = 0;
   _subCount = 0;
   _host = "fa-lectric.com";
-  _port = 80;  // Lewat NGINX (/ws) — tidak perlu buka port internal ke internet
+  _port = 443;  // WSS via NGINX (HTTPS/SSL)
   _deviceKey = "";
   _otaEnabled = true;
   _instance = this;
@@ -112,7 +112,11 @@ void FALectricIoT::_connectWiFi(const char* ssid, const char* password) {
 
 void FALectricIoT::_connectWebSocket() {
   String path = "/ws?key=" + String(_deviceKey);
-  _ws.begin(_host, _port, path.c_str());
+  if (_port == 443) {
+    _ws.beginSSL(_host, 443, path.c_str());
+  } else {
+    _ws.begin(_host, _port, path.c_str());
+  }
   _ws.onEvent(_wsEvent);
   _ws.setReconnectInterval(FA_RECONNECT_INTERVAL);
 }
