@@ -52,7 +52,7 @@ public:
   void loop();
   bool connected();
 
-  // Server config (optional — defaults to fa-lectric.com:3020)
+  // Server config (optional — defaults to fa-lectric.com:80 via NGINX /ws)
   void setServer(const char* host, uint16_t port);
 
   // Realtime Database — Write

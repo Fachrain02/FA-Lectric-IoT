@@ -16,7 +16,7 @@ FALectricIoT::FALectricIoT() {
   _lastReconnect = 0;
   _subCount = 0;
   _host = "fa-lectric.com";
-  _port = 3020;
+  _port = 80;  // Lewat NGINX (/ws) — tidak perlu buka port internal ke internet
   _deviceKey = "";
   _otaEnabled = true;
   _instance = this;
