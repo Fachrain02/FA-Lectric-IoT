@@ -32,7 +32,7 @@ String storedSSID = "";
 String storedPass = "";
 String storedKey = "";
 String storedServer = "";
-uint16_t storedWsPort = 3002;
+uint16_t storedWsPort = 3020;
 
 bool wsConnected = false;
 unsigned long lastReconnect = 0;
@@ -51,7 +51,7 @@ void setup() {
   storedPass = prefs.getString("pass", "");
   storedKey = prefs.getString("key", "");
   storedServer = prefs.getString("server", "fa-lectric.com");
-  storedWsPort = prefs.getUShort("wsport", 3002);
+  storedWsPort = prefs.getUShort("wsport", 3020);
   prefs.end();
 
   if (storedSSID.length() > 0 && storedKey.length() > 0) {
