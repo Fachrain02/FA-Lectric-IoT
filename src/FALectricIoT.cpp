@@ -297,6 +297,10 @@ void FALectricIoT::set(const char* key, float value) {
   _ws.sendTXT(msg);
 }
 
+void FALectricIoT::set(const char* key, double value) {
+  set(key, (float)value);
+}
+
 void FALectricIoT::set(const char* key, int value) {
   _cache[key] = value;
   if (!_connected) return;

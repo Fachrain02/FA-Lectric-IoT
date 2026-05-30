@@ -57,6 +57,7 @@ public:
 
   // Realtime Database — Write
   void set(const char* key, float value);
+  void set(const char* key, double value);
   void set(const char* key, int value);
   void set(const char* key, bool value);
   void set(const char* key, const char* value);
