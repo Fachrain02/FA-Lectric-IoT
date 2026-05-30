@@ -21,6 +21,7 @@ push	KEYWORD2
 on	KEYWORD2
 connected	KEYWORD2
 setServer	KEYWORD2
+enableOTA	KEYWORD2
 
 #######################################
 # Instances (KEYWORD2)

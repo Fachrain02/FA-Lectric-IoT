@@ -19,7 +19,10 @@ void setup() {
   Serial.begin(115200);
   pinMode(RELAY_PIN, OUTPUT);
 
+  // Cara 1 (manual): isi WiFi & API Key langsung di sini.
   fa.begin("WIFI_SSID", "WIFI_PASS", "fal_YOUR_API_KEY");
+  // Cara 2 (OTA/ESP32): pakai kredensial dari Flash & Setup awal — tanpa hardcode.
+  // fa.begin();
   fa.on("Relay", onRelay);
 }
 

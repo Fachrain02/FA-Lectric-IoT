@@ -17,7 +17,10 @@ void setup() {
   pinMode(PIR_PIN, INPUT);
   pinMode(LED_PIN, OUTPUT);
 
+  // Cara 1 (manual): isi WiFi & API Key langsung di sini.
   fa.begin("WIFI_SSID", "WIFI_PASS", "fal_YOUR_API_KEY");
+  // Cara 2 (OTA/ESP32): pakai kredensial dari Flash & Setup awal — tanpa hardcode.
+  // fa.begin();
 }
 
 void loop() {
