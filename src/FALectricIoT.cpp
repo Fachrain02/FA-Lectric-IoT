@@ -14,6 +14,7 @@ static FALectricIoT* _instance = nullptr;
 FALectricIoT::FALectricIoT() {
   _connected = false;
   _lastReconnect = 0;
+  _lastHeartbeat = 0;
   _subCount = 0;
   _host = "fa-lectric.com";
   _port = 443;  // WSS via NGINX (HTTPS/SSL)
@@ -72,6 +73,14 @@ void FALectricIoT::setServer(const char* host, uint16_t port) {
 
 void FALectricIoT::loop() {
   _ws.loop();
+
+  // Heartbeat non-blocking: kirim sinyal "masih hidup" tiap 15 detik.
+  // Memakai millis() (read-only timer global) + variabel privat _lastHeartbeat,
+  // jadi TIDAK mengganggu millis() / timer milik program user.
+  if (_connected && millis() - _lastHeartbeat > FA_HEARTBEAT_INTERVAL) {
+    _lastHeartbeat = millis();
+    _ws.sendTXT("{\"type\":\"hb\"}");
+  }
 
   // Auto-reconnect
   if (!_connected && millis() - _lastReconnect > FA_RECONNECT_INTERVAL) {

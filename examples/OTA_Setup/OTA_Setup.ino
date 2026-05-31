@@ -36,6 +36,7 @@ uint16_t storedWsPort = 443;  // WSS via NGINX (HTTPS/SSL)
 
 bool wsConnected = false;
 unsigned long lastReconnect = 0;
+unsigned long lastHeartbeat = 0;
 
 void setup() {
   Serial.begin(115200);
@@ -80,6 +81,11 @@ void loop() {
     if (!wsConnected && millis() - lastReconnect > 3000) {
       lastReconnect = millis();
       connectWebSocket();
+    }
+    // Heartbeat non-blocking tiap 15 detik (tanda masih hidup)
+    if (wsConnected && millis() - lastHeartbeat > 15000) {
+      lastHeartbeat = millis();
+      ws.sendTXT("{\"type\":\"hb\"}");
     }
   }
 }

@@ -32,6 +32,7 @@
 
 #define FA_MAX_SUBSCRIPTIONS 20
 #define FA_RECONNECT_INTERVAL 3000
+#define FA_HEARTBEAT_INTERVAL 15000
 #define FA_JSON_BUFFER_SIZE 1024
 
 typedef void (*FACallback)(String value);
@@ -91,6 +92,7 @@ private:
   uint16_t _port;
   bool _connected;
   unsigned long _lastReconnect;
+  unsigned long _lastHeartbeat;
   bool _otaEnabled;
 
   // Penyimpanan kredensial saat dibaca dari NVS (agar pointer tetap valid)
