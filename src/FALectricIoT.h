@@ -1,12 +1,3 @@
-/**
- * FA-Lectric-IoT Library
- * Realtime IoT communication via WebSocket for ESP32 & ESP8266
- * 
- * https://fa-lectric.com
- * https://github.com/Fachrain02/FA-Lectric-IoT
- * 
- * (c) 2026 Fachrain Azis - FA-LECTRIC
- */
 
 #ifndef FA_LECTRIC_IOT_H
 #define FA_LECTRIC_IOT_H
@@ -46,17 +37,17 @@ class FALectricIoT {
 public:
   FALectricIoT();
 
-  // Setup & Connection
-  void begin();  // Baca SSID/password/key dari NVS (hasil setup awal via OTA_Setup)
+  void begin();
   void begin(const char* ssid, const char* password, const char* deviceKey);
+  void begin(const char* ssid, const char* password, const char* deviceKey, const char* deviceId);
   void begin(const char* ssid, const char* password, const char* deviceKey, const char* host, uint16_t port);
   void loop();
   bool connected();
 
-  // Server config (optional — defaults to fa-lectric.com:443 WSS via NGINX)
+  void device(const char* deviceId);
+
   void setServer(const char* host, uint16_t port);
 
-  // Realtime Database — Write
   void set(const char* key, float value);
   void set(const char* key, double value);
   void set(const char* key, int value);
@@ -64,26 +55,27 @@ public:
   void set(const char* key, const char* value);
   void set(const char* key, String value);
 
-  // Realtime Database — Read (from local cache, updated via WebSocket)
+  void folder(const char* path);
+
   float getFloat(const char* key);
   int getInt(const char* key);
   bool getBool(const char* key);
   String getString(const char* key);
 
-  // Collections — Push record
   void push(const char* collection, const char* key1, float val1);
   void push(const char* collection, const char* key1, float val1, const char* key2, float val2);
   void push(const char* collection, const char* key1, float val1, const char* key2, float val2, const char* key3, float val3);
   void push(const char* collection, const char* key1, float val1, const char* key2, float val2, const char* key3, float val3, const char* key4, float val4);
   void pushJSON(const char* collection, const char* jsonPayload);
 
-  // Subscribe — Callback when key changes (from UI or other devices)
   void on(const char* key, FACallback callback);
 
-  // OTA — Update program via website (dipicu manual oleh user dari aplikasi).
-  // Aktif otomatis: dengarkan perintah OTA melalui WebSocket di fa.loop().
-  // Tidak ada polling — nol beban saat idle.
-  void enableOTA(bool enable);   // default: aktif
+  void enableOTA(bool enable);
+
+  #ifdef ESP32
+  static String encryptAES(String plaintext, const char* key32);
+  static String decryptAES(String ciphertext, const char* key32);
+  #endif
 
 private:
   WebSocketsClient _ws;
@@ -95,21 +87,24 @@ private:
   unsigned long _lastHeartbeat;
   bool _otaEnabled;
 
-  // Penyimpanan kredensial saat dibaca dari NVS (agar pointer tetap valid)
   String _nvsSsid;
   String _nvsPass;
   String _nvsKey;
   String _nvsHost;
+  String _nvsPubKey;
+  String _otaSignature;
 
-  // Local data cache
+  String _currentFolder;
+
+  String _deviceId;
+
   StaticJsonDocument<FA_JSON_BUFFER_SIZE> _cache;
 
-  // Subscriptions
   FASubscription _subs[FA_MAX_SUBSCRIPTIONS];
   uint8_t _subCount;
 
-  // Internal
   void _connectWiFi(const char* ssid, const char* password);
+  String _fullKey(const char* key);
   void _connectWebSocket();
   void _handleMessage(uint8_t* payload, size_t length);
   void _sendSet(const char* key, const char* value);
@@ -117,9 +112,9 @@ private:
   void _performOTA(const char* url, const char* version);
   void _reportOTA(const char* phase, int percent, const char* message);
   static void _wsEvent(WStype_t type, uint8_t* payload, size_t length);
+  bool _verifySignature(const uint8_t* hash, size_t hashLen, const String& signatureBase64, const String& pubKeyPEM);
 };
 
-// Global instance — user just uses `fa.begin(...)` etc.
 extern FALectricIoT fa;
 
 #endif

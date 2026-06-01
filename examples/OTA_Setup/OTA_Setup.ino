@@ -10,7 +10,8 @@
  *      (mis. BasicRealtimeDB, RelayControl, dll) TANPA kabel lagi.
  *
  * Board: ESP32 Dev Module (atau varian lain)
- * Partition Scheme: Default 4MB with spiffs (atau Minimal SPIFFS jika program besar)
+ * Partition Scheme: Default 4MB with spiffs (atau Minimal SPIFFS jika program
+ * besar)
  *
  * Library yang dibutuhkan (install via Arduino Library Manager):
  *   - WebSockets by Markus Sattler  (arduinoWebSockets)
@@ -18,12 +19,12 @@
  *   (WiFi, HTTPClient, Update, Preferences sudah built-in ESP32)
  */
 
-#include <WiFi.h>
-#include <HTTPClient.h>
-#include <Update.h>
-#include <Preferences.h>
-#include <WebSocketsClient.h>
 #include <ArduinoJson.h>
+#include <HTTPClient.h>
+#include <Preferences.h>
+#include <Update.h>
+#include <WebSocketsClient.h>
+#include <WiFi.h>
 
 Preferences prefs;
 WebSocketsClient ws;
@@ -32,7 +33,8 @@ String storedSSID = "";
 String storedPass = "";
 String storedKey = "";
 String storedServer = "";
-uint16_t storedWsPort = 443;  // WSS via NGINX (HTTPS/SSL)
+String storedDeviceId = "";
+uint16_t storedWsPort = 443; // WSS via NGINX (HTTPS/SSL)
 
 bool wsConnected = false;
 unsigned long lastReconnect = 0;
@@ -52,6 +54,7 @@ void setup() {
   storedPass = prefs.getString("pass", "");
   storedKey = prefs.getString("key", "");
   storedServer = prefs.getString("server", "fa-lectric.com");
+  storedDeviceId = prefs.getString("deviceId", "");
   storedWsPort = prefs.getUShort("wsport", 443);
   prefs.end();
 
@@ -99,6 +102,8 @@ void handleSerialConfig(String json) {
   String pass = extractJSON(json, "pass");
   String key = extractJSON(json, "key");
   String server = extractJSON(json, "server");
+  String pubkey = extractJSON(json, "pubkey");
+  pubkey.replace("\\n", "\n"); // Unescape newlines for PEM format
 
   if (ssid.length() == 0 || key.length() == 0) {
     Serial.println("[FA] ERROR: SSID dan Key wajib diisi!");
@@ -110,16 +115,28 @@ void handleSerialConfig(String json) {
   prefs.putString("pass", pass);
   prefs.putString("key", key);
   prefs.putString("server", server.length() > 0 ? server : "fa-lectric.com");
+  prefs.putString(
+      "deviceId",
+      deviceId); // opsional, kosong = mode 1 perangkat (data di root)
+  if (pubkey.length() > 0) {
+    prefs.putString("pubkey", pubkey);
+  }
   prefs.end();
 
   storedSSID = ssid;
   storedPass = pass;
   storedKey = key;
   storedServer = server.length() > 0 ? server : "fa-lectric.com";
+  storedDeviceId = deviceId;
 
   Serial.println("[FA] Konfigurasi tersimpan!");
+  if (pubkey.length() > 0) {
+    Serial.println("[FA] Kunci publik ECDSA P-256 disimpan.");
+  }
   Serial.println("[FA] SSID: " + storedSSID);
   Serial.println("[FA] Server: " + storedServer);
+  if (storedDeviceId.length() > 0)
+    Serial.println("[FA] Device ID: " + storedDeviceId);
 
   connectWiFi();
 }
@@ -163,40 +180,45 @@ void connectWebSocket() {
   Serial.println("[FA] Menghubungkan ke server (WebSocket)...");
 }
 
-void wsEvent(WStype_t type, uint8_t* payload, size_t length) {
+void wsEvent(WStype_t type, uint8_t *payload, size_t length) {
   switch (type) {
-    case WStype_CONNECTED:
-      wsConnected = true;
-      Serial.println("[FA] Terhubung ke server. Siap menerima perintah OTA.");
-      Serial.println("[FA] Menunggu program dari dashboard...");
-      break;
-    case WStype_DISCONNECTED:
-      wsConnected = false;
-      Serial.println("[FA] Koneksi server terputus.");
-      break;
-    case WStype_TEXT: {
-      StaticJsonDocument<512> doc;
-      if (deserializeJson(doc, payload, length)) return;
-      const char* mtype = doc["type"];
-      if (mtype && strcmp(mtype, "ota") == 0) {
-        const char* url = doc["url"];
-        const char* ver = doc["version"] | "";
-        if (url) performOTA(url, ver);
-      }
-      break;
+  case WStype_CONNECTED:
+    wsConnected = true;
+    Serial.println("[FA] Terhubung ke server. Siap menerima perintah OTA.");
+    Serial.println("[FA] Menunggu program dari dashboard...");
+    break;
+  case WStype_DISCONNECTED:
+    wsConnected = false;
+    Serial.println("[FA] Koneksi server terputus.");
+    break;
+  case WStype_TEXT: {
+    StaticJsonDocument<512> doc;
+    if (deserializeJson(doc, payload, length))
+      return;
+    const char *mtype = doc["type"];
+    if (mtype && strcmp(mtype, "ota") == 0) {
+      const char *url = doc["url"];
+      const char *ver = doc["version"] | "";
+      if (url)
+        performOTA(url, ver);
     }
-    default:
-      break;
+    break;
+  }
+  default:
+    break;
   }
 }
 
 // ============ Report progres OTA ke aplikasi (via WebSocket) ============
 
-void reportOTA(const char* phase, int percent, const char* message) {
-  if (!wsConnected) return;
+void reportOTA(const char *phase, int percent, const char *message) {
+  if (!wsConnected)
+    return;
   String msg = "{\"type\":\"ota_status\",\"phase\":\"" + String(phase) + "\"";
-  if (percent >= 0) msg += ",\"percent\":" + String(percent);
-  if (message && strlen(message) > 0) msg += ",\"message\":\"" + String(message) + "\"";
+  if (percent >= 0)
+    msg += ",\"percent\":" + String(percent);
+  if (message && strlen(message) > 0)
+    msg += ",\"message\":\"" + String(message) + "\"";
   msg += "}";
   ws.sendTXT(msg);
   ws.loop();
@@ -204,7 +226,7 @@ void reportOTA(const char* phase, int percent, const char* message) {
 
 // ============ OTA Update ============
 
-void performOTA(const char* url, const char* version) {
+void performOTA(const char *url, const char *version) {
   Serial.println("[FA] OTA dimulai. Versi: " + String(version));
   reportOTA("downloading", 0, "");
 
@@ -233,7 +255,7 @@ void performOTA(const char* url, const char* version) {
     return;
   }
 
-  WiFiClient* stream = http.getStreamPtr();
+  WiFiClient *stream = http.getStreamPtr();
   uint8_t buff[1024];
   size_t written = 0;
   int lastPercent = -1;
@@ -242,12 +264,14 @@ void performOTA(const char* url, const char* version) {
   while (http.connected() && written < (size_t)contentLength) {
     size_t avail = stream->available();
     if (avail) {
-      int readBytes = stream->readBytes(buff, ((avail > sizeof(buff)) ? sizeof(buff) : avail));
+      int readBytes = stream->readBytes(
+          buff, ((avail > sizeof(buff)) ? sizeof(buff) : avail));
       Update.write(buff, readBytes);
       written += readBytes;
 
       int percent = (int)((written * 100) / contentLength);
-      if (percent != lastPercent && (percent - lastPercent >= 5 || millis() - lastReport > 800)) {
+      if (percent != lastPercent &&
+          (percent - lastPercent >= 5 || millis() - lastReport > 800)) {
         lastPercent = percent;
         lastReport = millis();
         Serial.println("[FA] OTA " + String(percent) + "%");
@@ -284,9 +308,11 @@ void performOTA(const char* url, const char* version) {
 String extractJSON(String json, String key) {
   String search = "\"" + key + "\":\"";
   int start = json.indexOf(search);
-  if (start < 0) return "";
+  if (start < 0)
+    return "";
   start += search.length();
   int end = json.indexOf("\"", start);
-  if (end < 0) return "";
+  if (end < 0)
+    return "";
   return json.substring(start, end);
 }

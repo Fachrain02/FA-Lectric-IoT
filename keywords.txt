@@ -13,6 +13,8 @@ FALectricIoT	KEYWORD1
 begin	KEYWORD2
 loop	KEYWORD2
 set	KEYWORD2
+folder	KEYWORD2
+device	KEYWORD2
 getFloat	KEYWORD2
 getInt	KEYWORD2
 getBool	KEYWORD2

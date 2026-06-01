@@ -81,6 +81,22 @@ void loop() {
 - [WebSockets](https://github.com/Links2004/arduinoWebSockets) by Markus Sattler
 - [ArduinoJson](https://arduinojson.org/) by Benoit Blanchon
 
+## Keamanan & Privasi (Secure OTA)
+
+Library ini dilengkapi dengan fitur **Exclusive Secure OTA** berbasis tanda tangan digital (**ECDSA P-256**) untuk memastikan update program hanya bisa dilakukan melalui dashboard resmi aplikasi Anda secara aman:
+
+1. **Cryptographic Signing (ECDSA P-256 & SHA-256)**:
+   - Setiap file biner program (.bin) di-hash menggunakan **SHA-256** dan ditandatangani secara dinamis di server Next.js menggunakan **Private Key** unik milik perangkat.
+   - ESP32 mengunduh file biner secara *streaming* dan memverifikasi tanda tangannya secara langsung di memori menggunakan pustaka bawaan `mbedtls` sebelum menulisnya ke partisi program.
+
+2. **Zero Hardcoded Credentials**:
+   - **TIDAK ada** kunci rahasia (*Private Key*), kunci publik (*Public Key*), kredensial database, atau token API yang tertanam (hardcoded) di dalam kode pustaka (Library) maupun kode contoh (*Examples*).
+   - *Public Key* di-generate secara otomatis dan diinjeksikan secara aman dari peramban (browser) ke memori **NVS (Non-Volatile Storage / Preferences)** ESP32 secara lokal saat proses **Flash & Setup** via Web Serial API.
+
+3. **Kebebasan Perangkat (Physical Ownership)**:
+   - Pengamanan ini hanya mengunci jalur update udara (OTA) agar tidak bisa disusupi oleh pihak lain.
+   - Pengguna tetap memegang kendali fisik penuh atas ESP32 mereka. Board tetap dapat dipakai untuk proyek lain di luar ekosistem aplikasi ini dengan cara mem-flash program baru secara langsung menggunakan kabel USB.
+
 ## License
 
 MIT License - (c) 2026 Fachrain Azis, FA-LECTRIC
