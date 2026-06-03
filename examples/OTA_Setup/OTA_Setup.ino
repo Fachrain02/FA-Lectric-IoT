@@ -134,6 +134,7 @@ void handleSerialConfig(String json) {
   String pass = extractJSON(json, "pass");
   String key = extractJSON(json, "key");
   String server = extractJSON(json, "server");
+  String deviceId = extractJSON(json, "deviceId");
   String pubkey = extractJSON(json, "pubkey");
   pubkey.replace("\\n", "\n"); // Unescape newlines for PEM format
 
