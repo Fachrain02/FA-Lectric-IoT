@@ -1,5 +1,5 @@
 /**
- * FA-LECTRIC IoT — OTA Setup Firmware (Bootstrap)
+ * FA-LECTRIC IoT — OTA Setup Firmware (Bootstrap + Dynamic VM)
  *
  * Program awal yang di-flash via kabel (website fa-lectric.com/iot/flash).
  * Tugasnya:
@@ -8,15 +8,11 @@
  *   3. Connect WiFi + WebSocket ke server.
  *   4. Dengarkan perintah OTA dari aplikasi -> unduh & flash program baru
  *      (mis. BasicRealtimeDB, RelayControl, dll) TANPA kabel lagi.
+ *   5. [BARU] Terima program JSON Bytecode dari Web Console dan eksekusi
+ *      secara langsung tanpa upload ulang (Zero-OTA Dynamic VM).
  *
  * Board: ESP32 Dev Module (atau varian lain)
- * Partition Scheme: Default 4MB with spiffs (atau Minimal SPIFFS jika program
- * besar)
- *
- * Library yang dibutuhkan (install via Arduino Library Manager):
- *   - WebSockets by Markus Sattler  (arduinoWebSockets)
- *   - ArduinoJson by Benoit Blanchon
- *   (WiFi, HTTPClient, Update, Preferences sudah built-in ESP32)
+ * Partition Scheme: Default 4MB with spiffs
  */
 
 #include <ArduinoJson.h>
@@ -29,16 +25,37 @@
 Preferences prefs;
 WebSocketsClient ws;
 
-String storedSSID = "";
-String storedPass = "";
-String storedKey = "";
-String storedServer = "";
+String storedSSID     = "";
+String storedPass     = "";
+String storedKey      = "";
+String storedServer   = "";
 String storedDeviceId = "";
-uint16_t storedWsPort = 443; // WSS via NGINX (HTTPS/SSL)
+uint16_t storedWsPort = 443;
 
-bool wsConnected = false;
-unsigned long lastReconnect = 0;
-unsigned long lastHeartbeat = 0;
+bool wsConnected      = false;
+unsigned long lastReconnect  = 0;
+unsigned long lastHeartbeat  = 0;
+
+// ---- Zero-OTA Dynamic VM state ----
+struct VMVar { char name[24]; float value; };
+struct VMProgram {
+  bool loaded    = false;
+  bool running   = false;
+  bool setupDone = false;
+  String setupJson;
+  String loopJson;
+  VMVar vars[20];
+  uint8_t varCount = 0;
+} vm;
+
+// Forward declarations VM
+void vmLoadProgram(const char* setupJson, const char* loopJson, const char* varsJson);
+void vmRunBlock(const char* jsonArray);
+void vmExecInstr(JsonArray& instr);
+void vmSetVar(const char* name, float val);
+float vmGetVar(const char* name);
+void vmSendLog(const char* msg);
+bool vmEvalCondition(const char* leftName, const char* op, float rightVal);
 
 void setup() {
   Serial.begin(115200);
@@ -46,7 +63,7 @@ void setup() {
 
   Serial.println();
   Serial.println("[FA] ============================");
-  Serial.println("[FA] FA-LECTRIC IoT OTA Setup v2.0");
+  Serial.println("[FA] FA-LECTRIC IoT OTA Setup v2.1.0");
   Serial.println("[FA] ============================");
 
   prefs.begin("fa-iot", false);
@@ -85,10 +102,25 @@ void loop() {
       lastReconnect = millis();
       connectWebSocket();
     }
-    // Heartbeat non-blocking tiap 15 detik (tanda masih hidup)
     if (wsConnected && millis() - lastHeartbeat > 15000) {
       lastHeartbeat = millis();
       ws.sendTXT("{\"type\":\"hb\"}");
+    }
+  }
+
+  // ---- Zero-OTA VM tick ----
+  if (vm.loaded && vm.running) {
+    if (!vm.setupDone) {
+      vmSendLog("[VM] Menjalankan setup()...");
+      vmRunBlock(vm.setupJson.c_str());
+      vm.setupDone = true;
+      vmSendLog("[VM] setup() selesai. Memulai loop()...");
+    }
+    unsigned long t0 = millis();
+    vmRunBlock(vm.loopJson.c_str());
+    if (millis() - t0 > 8000) {
+      vmSendLog("[VM] WATCHDOG: loop() timeout, dihentikan.");
+      vm.running = false;
     }
   }
 }
@@ -184,23 +216,66 @@ void wsEvent(WStype_t type, uint8_t *payload, size_t length) {
   switch (type) {
   case WStype_CONNECTED:
     wsConnected = true;
-    Serial.println("[FA] Terhubung ke server. Siap menerima perintah OTA.");
-    Serial.println("[FA] Menunggu program dari dashboard...");
+    Serial.println("[FA] Terhubung ke server. Siap menerima perintah OTA & Program.");
     break;
   case WStype_DISCONNECTED:
     wsConnected = false;
     Serial.println("[FA] Koneksi server terputus.");
     break;
   case WStype_TEXT: {
-    StaticJsonDocument<512> doc;
-    if (deserializeJson(doc, payload, length))
-      return;
+    DynamicJsonDocument doc(4096);
+    if (deserializeJson(doc, payload, length)) return;
     const char *mtype = doc["type"];
-    if (mtype && strcmp(mtype, "ota") == 0) {
+    if (!mtype) break;
+
+    // OTA Update
+    if (strcmp(mtype, "ota") == 0) {
       const char *url = doc["url"];
       const char *ver = doc["version"] | "";
-      if (url)
-        performOTA(url, ver);
+      if (url) performOTA(url, ver);
+      break;
+    }
+
+    // Sync awal — cek apakah ada __PROGRAM__ yang sudah tersimpan
+    if (strcmp(mtype, "sync") == 0) {
+      JsonObject data = doc["data"];
+      if (data.containsKey("__PROGRAM__")) {
+        JsonObject prog = data["__PROGRAM__"];
+        const char* status = prog["status"] | "";
+        if (strcmp(status, "running") == 0) {
+          String sj, lj, vj;
+          serializeJson(prog["setup"], sj);
+          serializeJson(prog["loop"],  lj);
+          serializeJson(prog["vars"],  vj);
+          vmLoadProgram(sj.c_str(), lj.c_str(), vj.c_str());
+          Serial.println("[VM] Program dipulihkan dari sync.");
+        }
+      }
+      break;
+    }
+
+    // Update realtime — deteksi __PROGRAM__ berubah
+    if (strcmp(mtype, "update") == 0) {
+      const char *key = doc["key"];
+      if (key && strcmp(key, "__PROGRAM__") == 0) {
+        DynamicJsonDocument progDoc(2048);
+        String val = doc["value"].as<String>();
+        if (!deserializeJson(progDoc, val)) {
+          const char* status = progDoc["status"] | "";
+          if (strcmp(status, "running") == 0) {
+            String sj, lj, vj;
+            serializeJson(progDoc["setup"], sj);
+            serializeJson(progDoc["loop"],  lj);
+            serializeJson(progDoc["vars"],  vj);
+            vmLoadProgram(sj.c_str(), lj.c_str(), vj.c_str());
+            Serial.println("[VM] Program baru diterima dari dashboard!");
+          } else if (strcmp(status, "stopped") == 0) {
+            vm.running = false;
+            Serial.println("[VM] Program dihentikan dari dashboard.");
+          }
+        }
+      }
+      break;
     }
     break;
   }
@@ -308,11 +383,144 @@ void performOTA(const char *url, const char *version) {
 String extractJSON(String json, String key) {
   String search = "\"" + key + "\":\"";
   int start = json.indexOf(search);
-  if (start < 0)
-    return "";
+  if (start < 0) return "";
   start += search.length();
   int end = json.indexOf("\"", start);
-  if (end < 0)
-    return "";
+  if (end < 0) return "";
   return json.substring(start, end);
+}
+
+// ============================================================
+// ZERO-OTA VM INTERPRETER
+// ============================================================
+
+void vmSetVar(const char* name, float val) {
+  for (uint8_t i = 0; i < vm.varCount; i++) {
+    if (strcmp(vm.vars[i].name, name) == 0) { vm.vars[i].value = val; return; }
+  }
+  if (vm.varCount < 20) {
+    strncpy(vm.vars[vm.varCount].name, name, 23);
+    vm.vars[vm.varCount].value = val;
+    vm.varCount++;
+  }
+}
+
+float vmGetVar(const char* name) {
+  for (uint8_t i = 0; i < vm.varCount; i++) {
+    if (strcmp(vm.vars[i].name, name) == 0) return vm.vars[i].value;
+  }
+  return 0.0f;
+}
+
+bool vmEvalCondition(const char* leftName, const char* op, float rightVal) {
+  float l = vmGetVar(leftName);
+  if (strcmp(op, ">")  == 0) return l >  rightVal;
+  if (strcmp(op, "<")  == 0) return l <  rightVal;
+  if (strcmp(op, ">=") == 0) return l >= rightVal;
+  if (strcmp(op, "<=") == 0) return l <= rightVal;
+  if (strcmp(op, "==") == 0) return l == rightVal;
+  if (strcmp(op, "!=") == 0) return l != rightVal;
+  return false;
+}
+
+void vmSendLog(const char* msg) {
+  Serial.println(msg);
+  if (!wsConnected) return;
+  String fk = storedDeviceId.length() > 0
+    ? storedDeviceId + "/__PROGRAM_LOG__"
+    : "__PROGRAM_LOG__";
+  String escaped = String(msg);
+  escaped.replace("\"", "'");
+  String wsMsg = "{\"type\":\"set\",\"key\":\"" + fk + "\",\"value\":\"" + escaped + "\"}";
+  ws.sendTXT(wsMsg);
+}
+
+void vmExecInstr(JsonArray& instr) {
+  if (instr.size() == 0) return;
+  String op = instr[0].as<String>();
+
+  if (op == "WRITE") {
+    pinMode(instr[1].as<int>(), OUTPUT);
+    digitalWrite(instr[1].as<int>(), instr[2].as<int>() ? HIGH : LOW);
+  }
+  else if (op == "WRITE_A") {
+    analogWrite(instr[1].as<int>(), constrain(instr[2].as<int>(), 0, 255));
+  }
+  else if (op == "PIN_MODE") {
+    pinMode(instr[1].as<int>(), String(instr[2].as<const char*>()) == "OUTPUT" ? OUTPUT : INPUT);
+  }
+  else if (op == "READ_A") {
+    float val = (float)analogRead(instr[1].as<int>());
+    vmSetVar(instr[2].as<const char*>(), val);
+    if (wsConnected) {
+      String fk = storedDeviceId.length() > 0
+        ? storedDeviceId + "/" + String(instr[2].as<const char*>())
+        : String(instr[2].as<const char*>());
+      ws.sendTXT("{\"type\":\"set\",\"key\":\"" + fk + "\",\"value\":" + String(val, 0) + "}");
+    }
+  }
+  else if (op == "READ_D") {
+    vmSetVar(instr[2].as<const char*>(), (float)digitalRead(instr[1].as<int>()));
+  }
+  else if (op == "DELAY") {
+    unsigned long ms = min((unsigned long)instr[1].as<unsigned long>(), (unsigned long)5000);
+    unsigned long t0 = millis();
+    while (millis() - t0 < ms) { ws.loop(); delay(10); }
+  }
+  else if (op == "SERIAL") {
+    String msg = instr[1].as<String>();
+    for (uint8_t i = 0; i < vm.varCount; i++) {
+      if (msg == String(vm.vars[i].name)) { msg = String(vm.vars[i].value, 2); break; }
+    }
+    vmSendLog(("[SKETCH] " + msg).c_str());
+  }
+  else if (op == "SET_VAR") {
+    vmSetVar(instr[1].as<const char*>(), instr[2].as<float>());
+  }
+  else if (op == "IF") {
+    bool cond = vmEvalCondition(
+      instr[1].as<const char*>(),
+      instr[2].as<const char*>(),
+      instr[3].as<float>()
+    );
+    JsonArray blk = cond ? instr[4].as<JsonArray>()
+                         : (instr.size() > 5 ? instr[5].as<JsonArray>() : JsonArray());
+    if (!blk.isNull()) {
+      for (JsonVariant item : blk) {
+        if (!item.is<JsonArray>()) continue;
+        JsonArray sub = item.as<JsonArray>();
+        vmExecInstr(sub);
+        if (!vm.running) break;
+      }
+    }
+  }
+}
+
+void vmRunBlock(const char* jsonArray) {
+  DynamicJsonDocument doc(4096);
+  if (deserializeJson(doc, jsonArray) != DeserializationError::Ok) return;
+  JsonArray arr = doc.as<JsonArray>();
+  for (JsonVariant item : arr) {
+    if (!item.is<JsonArray>()) continue;
+    JsonArray instr = item.as<JsonArray>();
+    vmExecInstr(instr);
+    if (!vm.running) break;
+  }
+}
+
+void vmLoadProgram(const char* setupJson, const char* loopJson, const char* varsJson) {
+  vm.setupJson  = String(setupJson);
+  vm.loopJson   = String(loopJson);
+  vm.varCount   = 0;
+  vm.setupDone  = false;
+  vm.loaded     = true;
+  vm.running    = true;
+
+  StaticJsonDocument<512> varsDoc;
+  if (!deserializeJson(varsDoc, varsJson)) {
+    for (JsonPair kv : varsDoc.as<JsonObject>()) {
+      vmSetVar(kv.key().c_str(), kv.value().as<float>());
+    }
+  }
+  Serial.println("[VM] Program di-load. Var: " + String(vm.varCount));
 }

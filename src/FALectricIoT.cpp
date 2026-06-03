@@ -21,6 +21,11 @@ FALectricIoT::FALectricIoT() {
   _currentFolder = "";
   _deviceId = "";
   _instance = this;
+  // Init VM
+  _vm.loaded    = false;
+  _vm.running   = false;
+  _vm.setupDone = false;
+  _vm.varCount  = 0;
 }
 
 void FALectricIoT::begin() {
@@ -144,6 +149,21 @@ void FALectricIoT::loop() {
       _connectWebSocket();
     }
   }
+
+  // ---- Zero-OTA VM tick ----
+  if (_vm.loaded && _vm.running) {
+    if (!_vm.setupDone) {
+      _vmSendLog("[VM] Menjalankan setup()...");
+      _vmRunBlock(_vm.setupJson.c_str());
+      _vm.setupDone = true;
+      _vmSendLog("[VM] setup() selesai. Memulai loop()...");
+    }
+    unsigned long t0 = millis();
+    _vmRunBlock(_vm.loopJson.c_str());
+    if (millis() - t0 > FA_VM_WATCHDOG_MS) {
+      _vmSendLog("[VM] WATCHDOG: loop() terlalu lama, dihentikan sementara.");
+    }
+  }
 }
 
 bool FALectricIoT::connected() { return _connected; }
@@ -217,28 +237,58 @@ void FALectricIoT::_handleMessage(uint8_t *payload, size_t length) {
     return;
 
   if (strcmp(type, "sync") == 0) {
-
     JsonObject data = doc["data"];
     for (JsonPair kv : data) {
       _cache[kv.key()] = kv.value();
     }
     Serial.println("[FA] Data synced.");
-  } else if (strcmp(type, "update") == 0) {
 
+    // Cek apakah ada program yang sudah tersimpan di data
+    if (data.containsKey("__PROGRAM__")) {
+      JsonObject prog = data["__PROGRAM__"];
+      const char* status = prog["status"] | "";
+      if (strcmp(status, "running") == 0) {
+        String setupStr, loopStr, varsStr;
+        serializeJson(prog["setup"], setupStr);
+        serializeJson(prog["loop"],  loopStr);
+        serializeJson(prog["vars"],  varsStr);
+        _vmLoadProgram(setupStr.c_str(), loopStr.c_str(), varsStr.c_str());
+      }
+    }
+
+  } else if (strcmp(type, "update") == 0) {
     const char *key = doc["key"];
     if (key) {
       _cache[key] = doc["value"];
-
       String val = doc["value"].as<String>();
       _notifySubscribers(key, val.c_str());
+
+      // Deteksi perubahan __PROGRAM__ secara real-time
+      if (strcmp(key, "__PROGRAM__") == 0) {
+        StaticJsonDocument<FA_JSON_BUFFER_SIZE> progDoc;
+        if (!deserializeJson(progDoc, val)) {
+          const char* status = progDoc["status"] | "";
+          if (strcmp(status, "running") == 0) {
+            String setupStr, loopStr, varsStr;
+            serializeJson(progDoc["setup"], setupStr);
+            serializeJson(progDoc["loop"],  loopStr);
+            serializeJson(progDoc["vars"],  varsStr);
+            _vmLoadProgram(setupStr.c_str(), loopStr.c_str(), varsStr.c_str());
+            Serial.println("[VM] Program baru diterima!");
+          } else if (strcmp(status, "stopped") == 0) {
+            _vm.running = false;
+            Serial.println("[VM] Program dihentikan dari dashboard.");
+            _vmSendLog("[VM] Program dihentikan.");
+          }
+        }
+      }
     }
   } else if (strcmp(type, "ota") == 0) {
-
     if (!_otaEnabled)
       return;
     const char *otaUrl = doc["url"];
     const char *otaVer = doc["version"] | "";
-    const char *sig = doc["signature"] | "";
+    const char *sig    = doc["signature"] | "";
     _otaSignature = String(sig);
     if (otaUrl) {
       _performOTA(otaUrl, otaVer);
@@ -672,4 +722,204 @@ bool FALectricIoT::_verifySignature(const uint8_t *hash, size_t hashLen,
 
   Serial.println("[FA] [Crypto] Tanda tangan digital SAH dan terverifikasi!");
   return true;
+}
+
+// ============================================================
+// ZERO-OTA VM INTERPRETER IMPLEMENTATION
+// ============================================================
+
+void FALectricIoT::_vmLoadProgram(const char* setupJson, const char* loopJson, const char* varsJson) {
+  _vm.setupJson  = String(setupJson);
+  _vm.loopJson   = String(loopJson);
+  _vm.varCount   = 0;
+  _vm.setupDone  = false;
+  _vm.loaded     = true;
+  _vm.running    = true;
+
+  // Muat variabel awal dari JSON object {"name": value, ...}
+  StaticJsonDocument<512> varsDoc;
+  if (!deserializeJson(varsDoc, varsJson)) {
+    for (JsonPair kv : varsDoc.as<JsonObject>()) {
+      _vmSetVar(kv.key().c_str(), kv.value().as<float>());
+    }
+  }
+  Serial.println("[VM] Program di-load. Variabel: " + String(_vm.varCount));
+}
+
+// ---------- Jalankan satu blok instruksi (setup atau loop) ----------
+void FALectricIoT::_vmRunBlock(const char* jsonArray) {
+  // Parse array instruksi dari JSON string
+  // Gunakan DynamicJsonDocument agar tidak overflow di stack
+  DynamicJsonDocument doc(4096);
+  if (deserializeJson(doc, jsonArray) != DeserializationError::Ok) return;
+
+  JsonArray arr = doc.as<JsonArray>();
+  for (JsonVariant item : arr) {
+    if (!item.is<JsonArray>()) continue;
+    JsonArray instr = item.as<JsonArray>();
+    _vmExecInstr(instr);
+
+    // Cek apakah program di-stop dari dashboard selama eksekusi
+    if (!_vm.running) break;
+  }
+}
+
+// ---------- Eksekusi satu instruksi ----------
+void FALectricIoT::_vmExecInstr(JsonArray& instr) {
+  if (instr.size() == 0) return;
+  String op = instr[0].as<String>();
+
+  // WRITE — digitalWrite
+  if (op == "WRITE") {
+    int pin = instr[1].as<int>();
+    int val = instr[2].as<int>();
+    pinMode(pin, OUTPUT);
+    digitalWrite(pin, val ? HIGH : LOW);
+    return;
+  }
+
+  // WRITE_A — analogWrite (PWM)
+  if (op == "WRITE_A") {
+    int pin = instr[1].as<int>();
+    int val = instr[2].as<int>();
+    analogWrite(pin, constrain(val, 0, 255));
+    return;
+  }
+
+  // PIN_MODE
+  if (op == "PIN_MODE") {
+    int pin = instr[1].as<int>();
+    String mode = instr[2].as<String>();
+    pinMode(pin, mode == "OUTPUT" ? OUTPUT : INPUT);
+    return;
+  }
+
+  // READ_A — analogRead → simpan ke variabel
+  if (op == "READ_A") {
+    int pin = instr[1].as<int>();
+    const char* varName = instr[2].as<const char*>();
+    float val = (float)analogRead(pin);
+    _vmSetVar(varName, val);
+    // Kirim nilai sensor ke realtime DB agar widget Display bisa membacanya
+    if (_connected) {
+      String fk = _fullKey(varName);
+      String msg = "{\"type\":\"set\",\"key\":\"" + fk + "\",\"value\":" + String(val, 0) + "}";
+      _ws.sendTXT(msg);
+    }
+    return;
+  }
+
+  // READ_D — digitalRead → simpan ke variabel
+  if (op == "READ_D") {
+    int pin = instr[1].as<int>();
+    const char* varName = instr[2].as<const char*>();
+    float val = (float)digitalRead(pin);
+    _vmSetVar(varName, val);
+    return;
+  }
+
+  // DELAY
+  if (op == "DELAY") {
+    unsigned long ms = instr[1].as<unsigned long>();
+    // Batasi delay maks 5 detik untuk keamanan
+    ms = min(ms, (unsigned long)5000);
+    unsigned long t0 = millis();
+    while (millis() - t0 < ms) {
+      _ws.loop(); // Tetap proses WebSocket selama delay
+      delay(10);
+    }
+    return;
+  }
+
+  // SERIAL — Serial.println
+  if (op == "SERIAL") {
+    String msg = instr[1].as<String>();
+    // Ganti nama variabel dengan nilainya jika ada
+    for (uint8_t i = 0; i < _vm.varCount; i++) {
+      String varName = String(_vm.vars[i].name);
+      if (msg == varName) {
+        msg = String(_vm.vars[i].value, 2);
+        break;
+      }
+    }
+    Serial.println("[SKETCH] " + msg);
+    _vmSendLog("[SKETCH] " + msg);
+    return;
+  }
+
+  // SET_VAR — assignment variabel
+  if (op == "SET_VAR") {
+    const char* name = instr[1].as<const char*>();
+    float val = instr[2].as<float>();
+    _vmSetVar(name, val);
+    return;
+  }
+
+  // IF — percabangan kondisional
+  if (op == "IF") {
+    const char* leftVar  = instr[1].as<const char*>();
+    const char* opStr    = instr[2].as<const char*>();
+    float rightVal       = instr[3].as<float>();
+    bool cond = _vmEvalCondition(leftVar, opStr, rightVal);
+
+    // Jalankan blok true atau else
+    JsonArray targetBlock = cond ? instr[4].as<JsonArray>() : (instr.size() > 5 ? instr[5].as<JsonArray>() : JsonArray());
+    if (!targetBlock.isNull()) {
+      for (JsonVariant item : targetBlock) {
+        if (!item.is<JsonArray>()) continue;
+        JsonArray sub = item.as<JsonArray>();
+        _vmExecInstr(sub);
+        if (!_vm.running) break;
+      }
+    }
+    return;
+  }
+}
+
+// ---------- Helpers variabel ----------
+void FALectricIoT::_vmSetVar(const char* name, float val) {
+  for (uint8_t i = 0; i < _vm.varCount; i++) {
+    if (strcmp(_vm.vars[i].name, name) == 0) {
+      _vm.vars[i].value = val;
+      return;
+    }
+  }
+  if (_vm.varCount < FA_VM_MAX_VARS) {
+    strncpy(_vm.vars[_vm.varCount].name, name, sizeof(_vm.vars[0].name) - 1);
+    _vm.vars[_vm.varCount].value = val;
+    _vm.varCount++;
+  }
+}
+
+float FALectricIoT::_vmGetVar(const char* name) {
+  for (uint8_t i = 0; i < _vm.varCount; i++) {
+    if (strcmp(_vm.vars[i].name, name) == 0) {
+      return _vm.vars[i].value;
+    }
+  }
+  return 0.0f;
+}
+
+// ---------- Evaluasi kondisi IF ----------
+bool FALectricIoT::_vmEvalCondition(const char* leftName, const char* op, float rightVal) {
+  float leftVal = _vmGetVar(leftName);
+  if (strcmp(op, ">")  == 0) return leftVal >  rightVal;
+  if (strcmp(op, "<")  == 0) return leftVal <  rightVal;
+  if (strcmp(op, ">=") == 0) return leftVal >= rightVal;
+  if (strcmp(op, "<=") == 0) return leftVal <= rightVal;
+  if (strcmp(op, "==") == 0) return leftVal == rightVal;
+  if (strcmp(op, "!=") == 0) return leftVal != rightVal;
+  return false;
+}
+
+// ---------- Kirim log ke realtime DB agar tampil di Serial Monitor web ----------
+void FALectricIoT::_vmSendLog(const char* msg) {
+  Serial.println(msg);
+  if (!_connected) return;
+  // Kirim ke key __PROGRAM_LOG__ agar Web Console bisa membacanya via SSE
+  String fk = _deviceId.length() > 0 ? _deviceId + "/__PROGRAM_LOG__" : "__PROGRAM_LOG__";
+  String escaped = String(msg);
+  escaped.replace("\"", "'");
+  String wsMsg = "{\"type\":\"set\",\"key\":\"" + fk + "\",\"value\":\"" + escaped + "\"}";
+  _ws.sendTXT(wsMsg);
 }

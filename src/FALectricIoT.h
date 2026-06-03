@@ -26,6 +26,26 @@
 #define FA_HEARTBEAT_INTERVAL 15000
 #define FA_JSON_BUFFER_SIZE 1024
 
+// Zero-OTA Dynamic VM Engine
+#define FA_VM_MAX_VARS     20
+#define FA_VM_MAX_INSTR    80
+#define FA_VM_WATCHDOG_MS  8000
+
+struct FAVMVar {
+  char name[24];
+  float value;
+};
+
+struct FAVMProgram {
+  bool loaded;
+  bool running;
+  bool setupDone;
+  String setupJson;
+  String loopJson;
+  FAVMVar vars[FA_VM_MAX_VARS];
+  uint8_t varCount;
+};
+
 typedef void (*FACallback)(String value);
 
 struct FASubscription {
@@ -113,6 +133,16 @@ private:
   void _reportOTA(const char* phase, int percent, const char* message);
   static void _wsEvent(WStype_t type, uint8_t* payload, size_t length);
   bool _verifySignature(const uint8_t* hash, size_t hashLen, const String& signatureBase64, const String& pubKeyPEM);
+
+  // Zero-OTA VM
+  FAVMProgram _vm;
+  void _vmLoadProgram(const char* setupJson, const char* loopJson, const char* varsJson);
+  void _vmRunBlock(const char* jsonArray);
+  void _vmExecInstr(JsonArray& instr);
+  void _vmSetVar(const char* name, float val);
+  float _vmGetVar(const char* name);
+  void _vmSendLog(const char* msg);
+  bool _vmEvalCondition(const char* leftName, const char* op, float rightVal);
 };
 
 extern FALectricIoT fa;
